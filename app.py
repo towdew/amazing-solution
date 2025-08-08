@@ -4,10 +4,8 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 from PIL import Image, ImageDraw, ImageFont
-from io import BytesIO
-import torch
 
-# ===== 캐시 디렉토리(쓰기 가능한 곳) 지정 =====
+# ========= 캐시 디렉토리(쓰기 가능한 경로) =========
 BASE_DIR = os.getcwd()
 CACHE_DIR = os.path.join(BASE_DIR, ".cache")
 HF_DIR = os.path.join(CACHE_DIR, "hf")
@@ -21,24 +19,26 @@ os.environ["TORCH_HOME"] = TORCH_DIR
 os.environ["TRANSFORMERS_CACHE"] = HF_DIR
 os.environ["EASYOCR_MODULE_PATH"] = EASYOCR_DIR
 
-# ===== 페이지 설정 =====
+# ========= 페이지 설정 =========
 st.set_page_config(page_title="이미지 기반 PDP 자동화", layout="centered")
 st.markdown("""
 <style>
-  .main .block-container {
-    max-width: 1000px !important;
-    margin: 0 auto !important;
-  }
+  .main .block-container { max-width: 1000px !important; margin: 0 auto !important; }
 </style>
 """, unsafe_allow_html=True)
 
 st.title("이미지 기반 PDP 생성 자동화 솔루션")
+st.write("✅ App is up")  # 부팅 확인
 
-# ===== 지연 로드 유틸 =====
+# ========= 지연 로드 유틸 =========
 def get_blip():
-    """첫 사용 시에만 BLIP 모델 로드"""
+    """
+    BLIP 모델을 첫 사용 시에만 로드 (지연 로드).
+    무거운 import와 다운로드를 함수 내부로 넣어 부팅 타임아웃 방지.
+    """
     if "blip_loaded" not in st.session_state:
         with st.spinner("BLIP 모델 로드 중... (최초 3~8분 소요)"):
+            # 무거운 모듈 import를 여기서
             from transformers import BlipProcessor, BlipForConditionalGeneration
             proc = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
             mdl = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")
@@ -48,16 +48,16 @@ def get_blip():
     return st.session_state["blip_processor"], st.session_state["blip_model"]
 
 def get_easyocr():
-    """첫 사용 시에만 EasyOCR 로드"""
+    """EasyOCR를 첫 사용 시에만 로드 (지연 로드)."""
     if "easyocr_loaded" not in st.session_state:
         with st.spinner("EasyOCR 로드 중... (최초 1~3분 소요)"):
-            import easyocr
+            import easyocr  # 지연 import
             reader = easyocr.Reader(['en'], gpu=False, model_storage_directory=EASYOCR_DIR)
             st.session_state["easyocr_reader"] = reader
             st.session_state["easyocr_loaded"] = True
     return st.session_state["easyocr_reader"]
 
-# ===== 이미지 업로드 =====
+# ========= 업로드 UI =========
 uploaded = st.file_uploader("이미지를 업로드하세요", type=["png","jpg","jpeg"])
 if not uploaded:
     st.info("이미지를 선택해주세요")
@@ -66,14 +66,14 @@ if not uploaded:
 from PIL import Image
 img = Image.open(uploaded).convert("RGB")
 
-# 간단 표시
+# 미리보기(라벨 1 표시)
 annotated = img.copy()
 draw = ImageDraw.Draw(annotated)
 font = ImageFont.load_default()
 draw.text((10, 10), "1", fill="red", font=font)
 st.image(annotated, use_container_width=True)
 
-# ===== 기능 함수들 =====
+# ========= 기능 함수들 =========
 def extract_text_via_easyocr(pil_img):
     reader = get_easyocr()
     arr = np.array(pil_img)
@@ -81,6 +81,8 @@ def extract_text_via_easyocr(pil_img):
     return "\n".join(lines)
 
 def generate_blip_caption(pil_img):
+    # torch도 지연 import (부팅 시 메모리/시간 절약)
+    import torch
     processor, blip_model = get_blip()
     device = "cuda" if torch.cuda.is_available() else "cpu"
     inputs = processor(images=pil_img, return_tensors="pt").to(device)
@@ -90,14 +92,15 @@ def generate_blip_caption(pil_img):
 
 def make_alt_candidates(pil_img):
     base = generate_blip_caption(pil_img)
-    cands = [base, base + " in a modern environment", "LG product - " + base]
-    unique = []
+    cands = [base, f"{base} in a modern environment", f"LG product - {base}"]
+    # 중복 제거 후 최대 3개
+    uniq = []
     for c in cands:
-        if c not in unique:
-            unique.append(c)
-        if len(unique) == 3:
+        if c not in uniq:
+            uniq.append(c)
+        if len(uniq) == 3:
             break
-    return unique
+    return uniq
 
 COMPONENT_DEFS = {
     "ST0001": {"name": "Hero banner", "has_image": True},
@@ -134,7 +137,7 @@ def classify_elements(lines):
 def recommend_components(classified, has_image=True):
     return [cid for cid, comp in COMPONENT_DEFS.items() if comp["has_image"] == has_image]
 
-# ===== UI 동작 =====
+# ========= UI 동작 =========
 col1, col2 = st.columns(2)
 with col1:
     if st.button("🖼️ Alt Text 생성"):
@@ -149,6 +152,7 @@ with col2:
         st.session_state["classified"] = classify_elements(lines)
         st.session_state["recs"] = recommend_components(st.session_state["classified"])
 
+# 결과 표시
 if "candidates" in st.session_state:
     choice = st.radio("Alt Text 후보 선택:", st.session_state["candidates"], key="alt_choice")
     st.subheader("🖼️ Selected Alt Text")
