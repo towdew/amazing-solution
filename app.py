@@ -28,7 +28,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("이미지 기반 PDP 생성 자동화 솔루션")
-st.write("✅ App is up")  # 부팅 확인
+# st.write("✅ App is up")  # 부팅 확인
 
 # ========= 지연 로드 유틸 =========
 def get_blip():
@@ -179,3 +179,4 @@ if st.session_state.get("ocr_done"):
 
 if st.session_state.get("ocr_done") and st.button("📤 PDP생성하기 (WCM으로 전송하기)"):
     st.caption("※ 해당 기능은 기획 단계의 구현이며 실제 적용되어 있지 않습니다.")
+
