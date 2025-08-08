@@ -1,11 +1,6 @@
 import streamlit as st
 import traceback
 
-try:
-    import os
-    import re
-    import streamlit as st
-    ...
 except Exception as e:
     st.error("앱 실행 중 예외가 발생했습니다:")
     st.error(f"{e}")
@@ -166,3 +161,4 @@ if st.session_state.get("ocr_done"):
 if st.session_state.get("ocr_done") and st.button("📤 PDP생성하기 (WCM으로 전송하기)"):
 
     st.caption("※ 해당 기능은 기획 단계의 구현이며 실제 적용되어 있지 않습니다.")
+
