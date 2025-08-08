@@ -1,0 +1,10 @@
+streamlit
+Pillow
+numpy
+scipy
+scikit-image
+pandas
+transformers
+torch
+requests
+easyocr
