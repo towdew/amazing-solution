@@ -5,11 +5,23 @@ import numpy as np
 import pandas as pd
 from PIL import Image, ImageDraw, ImageFont
 from io import BytesIO
-import easyocr
-from transformers import BlipProcessor, BlipForConditionalGeneration
 import torch
 
-# 페이지 설정
+# ===== 캐시 디렉토리(쓰기 가능한 곳) 지정 =====
+BASE_DIR = os.getcwd()
+CACHE_DIR = os.path.join(BASE_DIR, ".cache")
+HF_DIR = os.path.join(CACHE_DIR, "hf")
+TORCH_DIR = os.path.join(CACHE_DIR, "torch")
+EASYOCR_DIR = os.path.join(CACHE_DIR, "easyocr")
+for d in [CACHE_DIR, HF_DIR, TORCH_DIR, EASYOCR_DIR]:
+    os.makedirs(d, exist_ok=True)
+
+os.environ["HF_HOME"] = HF_DIR
+os.environ["TORCH_HOME"] = TORCH_DIR
+os.environ["TRANSFORMERS_CACHE"] = HF_DIR
+os.environ["EASYOCR_MODULE_PATH"] = EASYOCR_DIR
+
+# ===== 페이지 설정 =====
 st.set_page_config(page_title="이미지 기반 PDP 자동화", layout="centered")
 st.markdown("""
 <style>
@@ -20,53 +32,65 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# 모델 로드
-@st.cache_resource
-def load_blip():
-    proc = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
-    mdl = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")
-    return proc, mdl
-
-@st.cache_resource
-def load_easyocr_reader():
-    return easyocr.Reader(['en'], gpu=False)
-
-processor, blip_model = load_blip()
-reader = load_easyocr_reader()
-
-# UI: 이미지 업로드
 st.title("이미지 기반 PDP 생성 자동화 솔루션")
+
+# ===== 지연 로드 유틸 =====
+def get_blip():
+    """첫 사용 시에만 BLIP 모델 로드"""
+    if "blip_loaded" not in st.session_state:
+        with st.spinner("BLIP 모델 로드 중... (최초 3~8분 소요)"):
+            from transformers import BlipProcessor, BlipForConditionalGeneration
+            proc = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
+            mdl = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")
+            st.session_state["blip_processor"] = proc
+            st.session_state["blip_model"] = mdl
+            st.session_state["blip_loaded"] = True
+    return st.session_state["blip_processor"], st.session_state["blip_model"]
+
+def get_easyocr():
+    """첫 사용 시에만 EasyOCR 로드"""
+    if "easyocr_loaded" not in st.session_state:
+        with st.spinner("EasyOCR 로드 중... (최초 1~3분 소요)"):
+            import easyocr
+            reader = easyocr.Reader(['en'], gpu=False, model_storage_directory=EASYOCR_DIR)
+            st.session_state["easyocr_reader"] = reader
+            st.session_state["easyocr_loaded"] = True
+    return st.session_state["easyocr_reader"]
+
+# ===== 이미지 업로드 =====
 uploaded = st.file_uploader("이미지를 업로드하세요", type=["png","jpg","jpeg"])
 if not uploaded:
     st.info("이미지를 선택해주세요")
     st.stop()
 
+from PIL import Image
 img = Image.open(uploaded).convert("RGB")
+
+# 간단 표시
 annotated = img.copy()
 draw = ImageDraw.Draw(annotated)
 font = ImageFont.load_default()
 draw.text((10, 10), "1", fill="red", font=font)
 st.image(annotated, use_container_width=True)
 
-# EasyOCR 텍스트 추출
-def extract_text_via_easyocr(pil_img: Image.Image) -> str:
+# ===== 기능 함수들 =====
+def extract_text_via_easyocr(pil_img):
+    reader = get_easyocr()
     arr = np.array(pil_img)
     lines = reader.readtext(arr, detail=0, paragraph=True)
     return "\n".join(lines)
 
-# BLIP 캡션 생성
 def generate_blip_caption(pil_img):
+    processor, blip_model = get_blip()
     device = "cuda" if torch.cuda.is_available() else "cpu"
     inputs = processor(images=pil_img, return_tensors="pt").to(device)
     blip_model.to(device)
     out = blip_model.generate(**inputs, max_length=50)
     return processor.decode(out[0], skip_special_tokens=True)
 
-# Alt 후보 생성
 def make_alt_candidates(pil_img):
     base = generate_blip_caption(pil_img)
     cands = [base, base + " in a modern environment", "LG product - " + base]
-    # 고유하게 최대 3개
     unique = []
     for c in cands:
         if c not in unique:
@@ -75,7 +99,6 @@ def make_alt_candidates(pil_img):
             break
     return unique
 
-# 분류/추천 정의
 COMPONENT_DEFS = {
     "ST0001": {"name": "Hero banner", "has_image": True},
     "ST0002": {"name": "Tab Anchor", "has_image": False},
@@ -83,7 +106,6 @@ COMPONENT_DEFS = {
     "ST0013": {"name": "Side Image", "has_image": True},
     "ST0014": {"name": "Layered Text", "has_image": True},
 }
-
 CTA_KEYWORDS = [
     "learn more","shop now","buy now","see more","read more",
     "click here","get started","try now","explore","discover","buy it now"
@@ -96,7 +118,8 @@ def classify_elements(lines):
         for kw in CTA_KEYWORDS:
             if kw in line.lower():
                 extracted.append(kw)
-                line = re.sub(rf"\b{re.escape(kw)}\b", "", line, flags=re.IGNORECASE).strip()
+                import re as _re
+                line = _re.sub(rf"\b{kw}\b", "", line, flags=_re.IGNORECASE).strip()
         if line:
             cleaned.append(line)
     disclaimers = [l for l in cleaned if l.startswith("*")]
@@ -111,24 +134,26 @@ def classify_elements(lines):
 def recommend_components(classified, has_image=True):
     return [cid for cid, comp in COMPONENT_DEFS.items() if comp["has_image"] == has_image]
 
-# Alt Text 생성
-if st.button("🖼️ Alt Text 생성"):
-    st.session_state["candidates"] = make_alt_candidates(img)
+# ===== UI 동작 =====
+col1, col2 = st.columns(2)
+with col1:
+    if st.button("🖼️ Alt Text 생성"):
+        st.session_state["candidates"] = make_alt_candidates(img)
+
+with col2:
+    if st.button("🚀 OCR 실행 (EasyOCR)"):
+        txt = extract_text_via_easyocr(img)
+        lines = txt.split("\n")
+        st.session_state["ocr_done"] = True
+        st.session_state["ocr_text"] = txt
+        st.session_state["classified"] = classify_elements(lines)
+        st.session_state["recs"] = recommend_components(st.session_state["classified"])
+
 if "candidates" in st.session_state:
     choice = st.radio("Alt Text 후보 선택:", st.session_state["candidates"], key="alt_choice")
     st.subheader("🖼️ Selected Alt Text")
     st.code(choice)
 
-# OCR 실행 (EasyOCR)
-if st.button("🚀 OCR 실행 (EasyOCR)"):
-    txt = extract_text_via_easyocr(img)
-    lines = txt.split("\n")
-    st.session_state["ocr_done"] = True
-    st.session_state["ocr_text"] = txt
-    st.session_state["classified"] = classify_elements(lines)
-    st.session_state["recs"] = recommend_components(st.session_state["classified"])
-
-# 결과 렌더링
 if st.session_state.get("ocr_done"):
     st.subheader("📋 OCR 결과")
     st.text_area("", st.session_state["ocr_text"], height=200)
@@ -148,6 +173,5 @@ if st.session_state.get("ocr_done"):
     csv = df.to_csv(encoding='utf-8-sig')
     st.download_button("💾 엑셀 파일 다운로드", data=csv, file_name="ocr_result.csv", mime="text/csv")
 
-# 전송 기능
 if st.session_state.get("ocr_done") and st.button("📤 PDP생성하기 (WCM으로 전송하기)"):
     st.caption("※ 해당 기능은 기획 단계의 구현이며 실제 적용되어 있지 않습니다.")
